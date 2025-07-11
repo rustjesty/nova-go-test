@@ -20,7 +20,7 @@ import (
 
 // Configuration
 var (
-	HeliusRPCURL = getEnv("HELIUS_RPC_URL", "https://pomaded-lithotomies-xfbhnqagbt-dedicated.helius-rpc.com/?api-key=37ba4475-8fa3-4491-875f-758894981943")
+	HeliusRPCURL = getEnv("RPC_ENDPOINT", "https://pomaded-lithotomies-xfbhnqagbt-dedicated.helius-rpc.com/?api-key=37ba4475-8fa3-4491-875f-758894981943")
 	MongoURI      = getEnv("MONGO_URI", "mongodb://localhost:27017")
 	DatabaseName  = getEnv("DB_NAME", "solana_api")
 	CollectionName = getEnv("COLLECTION_NAME", "api_keys")

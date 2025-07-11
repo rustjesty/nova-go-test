@@ -15,7 +15,7 @@ curl -s -X POST "$API_URL" \
   -H "Content-Type: application/json" \
   -H "X-API-Key: $API_KEY" \
   -d '{
-    "address": "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"
+    "wallets": ["9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"]
   }' | jq '.'
 
 # Test 2: Missing API key
@@ -23,7 +23,7 @@ echo -e "\n2. Testing missing API key..."
 curl -s -X POST "$API_URL" \
   -H "Content-Type: application/json" \
   -d '{
-    "address": "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"
+    "wallets": ["9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"]
   }' | jq '.'
 
 # Test 3: Invalid API key
@@ -32,7 +32,7 @@ curl -s -X POST "$API_URL" \
   -H "Content-Type: application/json" \
   -H "X-API-Key: invalid-key" \
   -d '{
-    "address": "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"
+    "wallets": ["9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"]
   }' | jq '.'
 
 # Test 4: Invalid address
@@ -41,7 +41,7 @@ curl -s -X POST "$API_URL" \
   -H "Content-Type: application/json" \
   -H "X-API-Key: $API_KEY" \
   -d '{
-    "address": "invalid-address"
+    "wallets": ["invalid-address"]
   }' | jq '.'
 
 # Test 5: Missing address
@@ -58,7 +58,7 @@ curl -s -X POST "$API_URL" \
   -H "Content-Type: application/json" \
   -H "X-API-Key: $API_KEY" \
   -d '{
-    "address": "11111111111111111111111111111112"
+    "wallets": ["11111111111111111111111111111112"]
   }' | jq '.'
 
 echo -e "\nSecond request (should be cached):"
@@ -66,7 +66,7 @@ curl -s -X POST "$API_URL" \
   -H "Content-Type: application/json" \
   -H "X-API-Key: $API_KEY" \
   -d '{
-    "address": "11111111111111111111111111111112"
+    "wallets": ["11111111111111111111111111111112"]
   }' | jq '.'
 
 # Test 7: Different API key
@@ -75,7 +75,7 @@ curl -s -X POST "$API_URL" \
   -H "Content-Type: application/json" \
   -H "X-API-Key: test-api-key-2" \
   -d '{
-    "address": "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"
+    "wallets": ["9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"]
   }' | jq '.'
 
 echo -e "\n✅ Testing completed!"

@@ -58,7 +58,10 @@ Fetches the Solana balance for a given wallet address.
 **Request Body**:
 ```json
 {
-  "address": "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"
+  "wallets": [
+    "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
+    "11111111111111111111111111111112"
+  ]
 }
 ```
 
@@ -66,8 +69,16 @@ Fetches the Solana balance for a given wallet address.
 ```json
 {
   "success": true,
-  "balance": 1.23456789,
-  "address": "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"
+  "wallets": [
+    {
+      "address": "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
+      "balance": 1.23456789
+    },
+    {
+      "address": "11111111111111111111111111111112",
+      "balance": 0.0
+    }
+  ]
 }
 ```
 
@@ -84,12 +95,15 @@ Fetches the Solana balance for a given wallet address.
 ### Using curl
 
 ```bash
-# Get balance for a wallet
+# Get balance for multiple wallets
 curl -X POST http://localhost:8080/api/get-balance \
   -H "Content-Type: application/json" \
   -H "X-API-Key: test-api-key-1" \
   -d '{
-    "address": "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"
+    "wallets": [
+      "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
+      "11111111111111111111111111111112"
+    ]
   }'
 ```
 
@@ -103,7 +117,10 @@ const response = await fetch('http://localhost:8080/api/get-balance', {
     'X-API-Key': 'test-api-key-1'
   },
   body: JSON.stringify({
-    address: '9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM'
+    wallets: [
+      '9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM',
+      '11111111111111111111111111111112'
+    ]
   })
 });
 
@@ -123,7 +140,10 @@ response = requests.post(
         'X-API-Key': 'test-api-key-1'
     },
     json={
-        'address': '9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM'
+        'wallets': [
+            '9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM',
+            '11111111111111111111111111111112'
+        ]
     }
 )
 
