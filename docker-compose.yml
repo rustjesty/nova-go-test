@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  mongodb:
+    image: mongo:6.0
+    container_name: solana-api-mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - solana-api-network
+
+  solana-api:
+    build: .
+    container_name: solana-balance-api
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - MONGO_URI=mongodb://admin:password@mongodb:27017
+    depends_on:
+      - mongodb
+    networks:
+      - solana-api-network
+    volumes:
+      - ./setup_db.go:/app/setup_db.go:ro
+
+volumes:
+  mongodb_data:
+
+networks:
+  solana-api-network:
+    driver: bridge 
