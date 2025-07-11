@@ -22,15 +22,21 @@ var (
 )
 
 // Response structures
-type BalanceResponse struct {
-	Success bool    `json:"success"`
-	Balance float64 `json:"balance"`
+
+type GetBalanceRequest struct {
+	Wallets []string `json:"wallets" binding:"required"`
+}
+
+type WalletBalance struct {
 	Address string  `json:"address"`
+	Balance float64 `json:"balance"`
 	Error   string  `json:"error,omitempty"`
 }
 
-type GetBalanceRequest struct {
-	Address string `json:"address" binding:"required"`
+type BalanceResponse struct {
+	Success bool            `json:"success"`
+	Wallets []WalletBalance `json:"wallets"`
+	Error   string          `json:"error,omitempty"`
 }
 
 // Cache structure
@@ -175,40 +181,65 @@ func (app *App) getBalanceHandler(c *gin.Context) {
 		return
 	}
 
-	// Get request mutex for this address
-	mutex := app.getRequestMutex(req.Address)
-	mutex.Lock()
-	defer mutex.Unlock()
-
-	// Check cache first
-	if balance, cached := app.getCachedBalance(req.Address); cached {
-		c.JSON(http.StatusOK, BalanceResponse{
-			Success: true,
-			Balance: balance,
-			Address: req.Address,
+	// Validate wallets array
+	if len(req.Wallets) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "At least one wallet address is required",
 		})
 		return
 	}
 
-	// Fetch from Solana
-	balance, err := app.fetchBalanceFromSolana(req.Address)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, BalanceResponse{
-			Success: false,
-			Address: req.Address,
-			Error:   err.Error(),
+	// Limit number of wallets per request (optional, for performance)
+	if len(req.Wallets) > 100 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Maximum 100 wallet addresses per request",
 		})
 		return
 	}
 
-	// Cache the result
-	app.setCachedBalance(req.Address, balance)
+	var walletBalances []WalletBalance
+
+	// Process each wallet address
+	for _, address := range req.Wallets {
+		// Get request mutex for this address
+		mutex := app.getRequestMutex(address)
+		mutex.Lock()
+
+		// Check cache first
+		if balance, cached := app.getCachedBalance(address); cached {
+			walletBalances = append(walletBalances, WalletBalance{
+				Address: address,
+				Balance: balance,
+			})
+			mutex.Unlock()
+			continue
+		}
+
+		// Fetch from Solana
+		balance, err := app.fetchBalanceFromSolana(address)
+		mutex.Unlock()
+
+		if err != nil {
+			walletBalances = append(walletBalances, WalletBalance{
+				Address: address,
+				Error:   err.Error(),
+			})
+		} else {
+			// Cache the result
+			app.setCachedBalance(address, balance)
+			walletBalances = append(walletBalances, WalletBalance{
+				Address: address,
+				Balance: balance,
+			})
+		}
+	}
 
 	// Return response
 	c.JSON(http.StatusOK, BalanceResponse{
 		Success: true,
-		Balance: balance,
-		Address: req.Address,
+		Wallets: walletBalances,
 	})
 }
 
@@ -253,7 +284,7 @@ func (app *App) setupRoutes() *gin.Engine {
 	router := gin.Default()
 
 	// Health check endpoint (no authentication required)
-	router.GET("/health", app.healthHandler)
+	router.GET("/", app.healthHandler)
 
 	// API routes with authentication
 	api := router.Group("/api")
