@@ -20,10 +20,10 @@ import (
 
 // Configuration
 var (
-	HeliusRPCURL = getEnv("RPC_ENDPOINT", "https://pomaded-lithotomies-xfbhnqagbt-dedicated.helius-rpc.com/?api-key=37ba4475-8fa3-4491-875f-758894981943")
+	HeliusRPCURL = getEnv("RPC_ENDPOINT", "https://api.mainnet-beta.solana.com")
 	MongoURI      = getEnv("MONGO_URI", "mongodb://localhost:27017")
-	DatabaseName  = getEnv("DB_NAME", "solana_api")
-	CollectionName = getEnv("COLLECTION_NAME", "api_keys")
+	DatabaseName  = getEnv("DB_NAME", "test")
+	CollectionName = getEnv("COLLECTION_NAME", "test")
 	CacheTTL      = 10 * time.Second
 	RateLimit     = 10 // requests per minute
 )
@@ -44,8 +44,23 @@ type BalanceResponse struct {
 	Error   string  `json:"error,omitempty"`
 }
 
+// BalanceItem represents a single wallet balance result
+type BalanceItem struct {
+	Address string  `json:"address"`
+	Balance float64 `json:"balance"`
+	Error   string  `json:"error,omitempty"`
+}
+
+// GetBalanceRequest represents the request body for getting multiple wallet balances
 type GetBalanceRequest struct {
-	Address string `json:"address" binding:"required"`
+	Wallets []string `json:"Wallets" binding:"required"`
+}
+
+// GetBalanceResponse represents the response for multiple wallet balance requests
+type GetBalanceResponse struct {
+	Success bool          `json:"success"`
+	Results []BalanceItem `json:"results"`
+	Error   string        `json:"error,omitempty"`
 }
 
 // Cache structure
@@ -109,10 +124,12 @@ func NewApp() (*App, error) {
 
 // Validate API key against MongoDB
 func (app *App) validateAPIKey(apiKey string) bool {
+	fmt.Println("apiKey", apiKey)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	collection := app.db.Collection(CollectionName)
+	fmt.Println("CollectionName", CollectionName)
 	var result bson.M
 	err := collection.FindOne(ctx, bson.M{"api_key": apiKey}).Decode(&result)
 	return err == nil
@@ -191,6 +208,38 @@ func (app *App) fetchBalanceFromSolana(address string) (float64, error) {
 	return float64(balance.Value) / 1_000_000_000, nil
 }
 
+// Process single address with caching and error handling
+func (app *App) processAddress(address string) BalanceItem {
+	// Get request mutex for this address
+	mutex := app.getRequestMutex(address)
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	// Check cache first
+	if balance, cached := app.getCachedBalance(address); cached {
+		return BalanceItem{
+			Address: address,
+			Balance: balance,
+		}
+	}
+
+	// Fetch from Solana
+	balance, err := app.fetchBalanceFromSolana(address)
+	if err != nil {
+		return BalanceItem{
+			Address: address,
+			Error:   err.Error(),
+		}
+	}
+
+	// Cache the result
+	app.setCachedBalance(address, balance)
+	return BalanceItem{
+		Address: address,
+		Balance: balance,
+	}
+}
+
 // Get balance handler
 func (app *App) getBalanceHandler(c *gin.Context) {
 	// Get client IP for rate limiting
@@ -216,40 +265,42 @@ func (app *App) getBalanceHandler(c *gin.Context) {
 		return
 	}
 
-	// Get request mutex for this address
-	mutex := app.getRequestMutex(req.Address)
-	mutex.Lock()
-	defer mutex.Unlock()
-
-	// Check cache first
-	if balance, cached := app.getCachedBalance(req.Address); cached {
-		c.JSON(http.StatusOK, BalanceResponse{
-			Success: true,
-			Balance: balance,
-			Address: req.Address,
+	// Validate Wallets array
+	if len(req.Wallets) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "At least one address is required",
 		})
 		return
 	}
 
-	// Fetch from Solana
-	balance, err := app.fetchBalanceFromSolana(req.Address)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, BalanceResponse{
-			Success: false,
-			Address: req.Address,
-			Error:   err.Error(),
+	// Limit the number of Wallets to prevent abuse
+	if len(req.Wallets) > 100 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Maximum 100 Wallets allowed per request",
 		})
 		return
 	}
 
-	// Cache the result
-	app.setCachedBalance(req.Address, balance)
+	// Process all Wallets in parallel for better performance
+	results := make([]BalanceItem, len(req.Wallets))
+	var wg sync.WaitGroup
+
+	for i, address := range req.Wallets {
+		wg.Add(1)
+		go func(index int, addr string) {
+			defer wg.Done()
+			results[index] = app.processAddress(addr)
+		}(i, address)
+	}
+
+	wg.Wait()
 
 	// Return response
-	c.JSON(http.StatusOK, BalanceResponse{
+	c.JSON(http.StatusOK, GetBalanceResponse{
 		Success: true,
-		Balance: balance,
-		Address: req.Address,
+		Results: results,
 	})
 }
 
@@ -257,6 +308,7 @@ func (app *App) getBalanceHandler(c *gin.Context) {
 func (app *App) authMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		apiKey := c.GetHeader("X-API-Key")
+		fmt.Println("apiKey", apiKey)
 		if apiKey == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"success": false,
@@ -293,7 +345,7 @@ func (app *App) setupRoutes() *gin.Engine {
 	router := gin.Default()
 
 	// Health check endpoint (no authentication required)
-	router.GET("/health", app.healthHandler)
+	router.GET("/", app.healthHandler)
 
 	// API routes with authentication
 	api := router.Group("/api")

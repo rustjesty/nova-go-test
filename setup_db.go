@@ -12,8 +12,8 @@ import (
 )
 
 const (
-	MongoURI       = "mongodb://localhost:27017"
-	DatabaseName   = "solana_api"
+	MongoURI       = "mongodb+srv://thrillseekernw:1115@cluster0.zsstj4i.mongodb.net"
+	DatabaseName   = "go_test"
 	CollectionName = "api_keys"
 )
 
