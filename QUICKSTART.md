@@ -118,7 +118,7 @@ docker-compose up --build -d
 
 1. Read the full [README.md](README.md) for detailed documentation
 2. Check the [Makefile](Makefile) for additional commands
-3. Customize configuration in [env.example](env.example)
+3. Customize configuration in [.env.example](env.example)
 4. Add your own API keys to the database
 
 ## Support
