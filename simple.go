@@ -5,38 +5,47 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 	"golang.org/x/time/rate"
 )
 
 // Configuration
 var (
-	HeliusRPCURL = "https://pomaded-lithotomies-xfbhnqagbt-dedicated.helius-rpc.com/?api-key=37ba4475-8fa3-4491-875f-758894981943"
-	CacheTTL     = 10 * time.Second
-	RateLimit    = 10 // requests per minute
+	HeliusRPCURL = getEnv("RPC_ENDPOINT", "https://pomaded-lithotomies-xfbhnqagbt-dedicated.helius-rpc.com/?api-key=37ba4475-8fa3-4491-875f-758894981943")
+	MongoURI      = getEnv("MONGO_URI", "mongodb://localhost:27017")
+	DatabaseName  = getEnv("DB_NAME", "solana_api")
+	CollectionName = getEnv("COLLECTION_NAME", "api_keys")
+	CacheTTL      = 10 * time.Second
+	RateLimit     = 10 // requests per minute
 )
 
-// Response structures
-
-type GetBalanceRequest struct {
-	Wallets []string `json:"wallets" binding:"required"`
+// Helper function to get environment variables with defaults
+func getEnv(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
 }
 
-type WalletBalance struct {
-	Address string  `json:"address"`
+// Response structures
+type BalanceResponse struct {
+	Success bool    `json:"success"`
 	Balance float64 `json:"balance"`
+	Address string  `json:"address"`
 	Error   string  `json:"error,omitempty"`
 }
 
-type BalanceResponse struct {
-	Success bool            `json:"success"`
-	Wallets []WalletBalance `json:"wallets"`
-	Error   string          `json:"error,omitempty"`
+type GetBalanceRequest struct {
+	Address string `json:"address" binding:"required"`
 }
 
 // Cache structure
@@ -47,14 +56,14 @@ type CacheEntry struct {
 
 // Application state
 type App struct {
-	client          *rpc.Client
-	cache           map[string]CacheEntry
-	cacheMutex      sync.RWMutex
-	rateLimiters    map[string]*rate.Limiter
-	rateMutex       sync.RWMutex
-	requestMutex    map[string]*sync.Mutex
+	client     *rpc.Client
+	db         *mongo.Database
+	cache      map[string]CacheEntry
+	cacheMutex sync.RWMutex
+	rateLimiters map[string]*rate.Limiter
+	rateMutex    sync.RWMutex
+	requestMutex map[string]*sync.Mutex
 	requestMutexMap sync.RWMutex
-	validAPIKeys    map[string]bool
 }
 
 // Initialize the application
@@ -62,25 +71,51 @@ func NewApp() (*App, error) {
 	// Initialize Solana RPC client
 	client := rpc.New(HeliusRPCURL)
 
-	// Initialize valid API keys (for testing)
-	validAPIKeys := map[string]bool{
-		"test-api-key-1": true,
-		"test-api-key-2": true,
-		"demo-api-key-123": true,
+	// Initialize MongoDB connection
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	mongoClient, err := mongo.Connect(ctx, options.Client().ApplyURI(MongoURI))
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to MongoDB: %v", err)
+	}
+
+	// Ping the database
+	err = mongoClient.Ping(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to ping MongoDB: %v", err)
+	}
+
+	db := mongoClient.Database(DatabaseName)
+
+	// Initialize collections and indexes
+	collection := db.Collection(CollectionName)
+	_, err = collection.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "api_key", Value: 1}},
+		Options: options.Index().SetUnique(true),
+	})
+	if err != nil {
+		log.Printf("Warning: failed to create index: %v", err)
 	}
 
 	return &App{
-		client:       client,
-		cache:        make(map[string]CacheEntry),
-		rateLimiters: make(map[string]*rate.Limiter),
-		requestMutex: make(map[string]*sync.Mutex),
-		validAPIKeys: validAPIKeys,
+		client:        client,
+		db:            db,
+		cache:         make(map[string]CacheEntry),
+		rateLimiters:  make(map[string]*rate.Limiter),
+		requestMutex:  make(map[string]*sync.Mutex),
 	}, nil
 }
 
-// Validate API key (in-memory for testing)
+// Validate API key against MongoDB
 func (app *App) validateAPIKey(apiKey string) bool {
-	return app.validAPIKeys[apiKey]
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	collection := app.db.Collection(CollectionName)
+	var result bson.M
+	err := collection.FindOne(ctx, bson.M{"api_key": apiKey}).Decode(&result)
+	return err == nil
 }
 
 // Get rate limiter for IP
@@ -181,65 +216,40 @@ func (app *App) getBalanceHandler(c *gin.Context) {
 		return
 	}
 
-	// Validate wallets array
-	if len(req.Wallets) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"error":   "At least one wallet address is required",
+	// Get request mutex for this address
+	mutex := app.getRequestMutex(req.Address)
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	// Check cache first
+	if balance, cached := app.getCachedBalance(req.Address); cached {
+		c.JSON(http.StatusOK, BalanceResponse{
+			Success: true,
+			Balance: balance,
+			Address: req.Address,
 		})
 		return
 	}
 
-	// Limit number of wallets per request (optional, for performance)
-	if len(req.Wallets) > 100 {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"error":   "Maximum 100 wallet addresses per request",
+	// Fetch from Solana
+	balance, err := app.fetchBalanceFromSolana(req.Address)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, BalanceResponse{
+			Success: false,
+			Address: req.Address,
+			Error:   err.Error(),
 		})
 		return
 	}
 
-	var walletBalances []WalletBalance
-
-	// Process each wallet address
-	for _, address := range req.Wallets {
-		// Get request mutex for this address
-		mutex := app.getRequestMutex(address)
-		mutex.Lock()
-
-		// Check cache first
-		if balance, cached := app.getCachedBalance(address); cached {
-			walletBalances = append(walletBalances, WalletBalance{
-				Address: address,
-				Balance: balance,
-			})
-			mutex.Unlock()
-			continue
-		}
-
-		// Fetch from Solana
-		balance, err := app.fetchBalanceFromSolana(address)
-		mutex.Unlock()
-
-		if err != nil {
-			walletBalances = append(walletBalances, WalletBalance{
-				Address: address,
-				Error:   err.Error(),
-			})
-		} else {
-			// Cache the result
-			app.setCachedBalance(address, balance)
-			walletBalances = append(walletBalances, WalletBalance{
-				Address: address,
-				Balance: balance,
-			})
-		}
-	}
+	// Cache the result
+	app.setCachedBalance(req.Address, balance)
 
 	// Return response
 	c.JSON(http.StatusOK, BalanceResponse{
 		Success: true,
-		Wallets: walletBalances,
+		Balance: balance,
+		Address: req.Address,
 	})
 }
 
@@ -274,8 +284,7 @@ func (app *App) healthHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"status":    "healthy",
 		"timestamp": time.Now().Unix(),
-		"service":   "solana-balance-api-simple",
-		"note":      "Running in simple mode without MongoDB",
+		"service":   "solana-balance-api",
 	})
 }
 
@@ -284,7 +293,7 @@ func (app *App) setupRoutes() *gin.Engine {
 	router := gin.Default()
 
 	// Health check endpoint (no authentication required)
-	router.GET("/", app.healthHandler)
+	router.GET("/health", app.healthHandler)
 
 	// API routes with authentication
 	api := router.Group("/api")
@@ -327,8 +336,7 @@ func main() {
 	router := app.setupRoutes()
 
 	// Start server
-	log.Println("Starting Solana Balance API server (Simple Mode) on http://localhost:8080")
-	log.Println("Available API keys: test-api-key-1, test-api-key-2, demo-api-key-123")
+	log.Println("Starting Solana Balance API server on :8080")
 	if err := router.Run(":8080"); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
